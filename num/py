@@ -1,0 +1,131 @@
+import spacy
+import gradio as gr
+try:
+    nlp = spacy.load("uk_core_news_sm")
+except OSError:
+    import os
+    os.system("python -m spacy download uk_core_news_sm")
+    nlp = spacy.load("uk_core_news_sm")
+
+common_numerals = ["нуль", "один", "два", "три", "чотири", "п'ять", "шість", "сім", "вісім", "дев'ять",
+                   "десять", "одинадцять", "дванадцять", "тринадцять", "чотирнадцять", "п'ятнадцять",
+                   "шістнадцять", "сімнадцять", "вісімнадцять", "дев'ятнадцять", "двадцять", "тридцять",
+                   "сорок", "п'ятдесят", "шістдесят", "сімдесят", "вісімдесят", "дев'яносто", "сто",
+                   "двісті", "триста", "чотириста", "п'ятсот", "шістсот", "сімсот", "вісімсот",
+                   "дев'ятсот", "тисяча", "мільйон", "мільярд"]
+
+# Функція для виділення числівників у тексті
+def extract_numerals(text):
+    if not text.strip():
+        raise ValueError("Помилка: введіть непорожній текст для аналізу.")
+    
+    doc = nlp(text)
+    
+    numerals = []
+    current_numeral = []
+
+    for token in doc:
+        if token.pos_ == "NUM" or token.morph.get("NumType") in (["Card"], ["Ord"]) or token.text.lower() in common_numerals:
+            current_numeral.append(token)
+        else:
+            if current_numeral:
+                numerals.append(current_numeral)
+                current_numeral = []
+    if current_numeral:
+        numerals.append(current_numeral)
+    numeral_strings = [" ".join([t.text for t in numeral]) for numeral in numerals]
+
+    return ", ".join(numeral_strings) if numeral_strings else "Немає числівників у тексті", numerals
+
+# Функція для визначення типу числівника
+def determine_numeral_type(numeral_tokens):
+    numeral_text = " ".join([t.text for t in numeral_tokens])
+    if any(word in numeral_text for word in ["половина", "третина", "четвертина", "десята", "сота"]):
+        return "дробовий"
+    return "кількісний"  
+
+# Функція для визначення будови числівника
+def determine_numeral_structure(numeral_tokens):
+    if len(numeral_tokens) == 1:
+        return "простий"
+    elif len(numeral_tokens) == 2:
+        return "складений"
+    else:
+        return "складенний"
+
+# Функція для виведення характеристик числівників
+def extract_numeral_features(numeral_tokens):
+    if not numeral_tokens:
+        return "Немає числівників для аналізу"
+
+    characteristics = []
+
+    # Словники перекладу
+    num_type_translation = {"Card": "кількісний", "Ord": "порядковий"}
+    pos_translation = {"NUM": "числівник", "NOUN": "іменник", "ADJ": "прикметник", "PROPN": "власна назва", "ADV": "прислівник"}
+    case_translation = {
+        "Nom": "називний", "Gen": "родовий", "Dat": "давальний", "Acc": "знахідний", 
+        "Ins": "орудний", "Loc": "місцевий", "Voc": "кличний"
+    }
+
+    for numeral_tokens_list in numeral_tokens:
+        numeral_text = " ".join([t.text for t in numeral_tokens_list])
+        characteristics.append(numeral_text + ":")
+
+        # Визначаємо тип числівника як дробовий або кількісний
+        if len(numeral_tokens_list) > 1 and determine_numeral_type(numeral_tokens_list) == "дробовий":
+            num_type = "дробовий"
+        elif any(t.morph.get("NumType") for t in numeral_tokens_list):
+            num_type = num_type_translation.get(numeral_tokens_list[0].morph.get("NumType")[0], "Невідомо")
+        else:
+            num_type = determine_numeral_type(numeral_tokens_list)
+
+        # Визначаємо будову числівника як простий, складений або складенний
+        structure = determine_numeral_structure(numeral_tokens_list)
+        
+        for token in numeral_tokens_list:
+            features = {
+                "Тип": num_type,
+                "Будова": structure,
+                "Відмінок": case_translation.get(token.morph.get("Case")[0], "Невідомо") if token.morph.get("Case") else "Невідомо"
+            }
+            characteristics.append(f"  {token.text} -> Тип: {features['Тип']}, Будова: {features['Будова']}, Відмінок: {features['Відмінок']}")
+    
+    return "\n".join(characteristics)
+
+# Створюємо інтерфейс за допомогою Gradio
+def create_interface():
+    with gr.Blocks() as demo:
+        gr.Markdown("""<h1 style="text-align: center;">Виділення числівників у тексті</h1>""")
+        text_input = gr.Textbox(label="Введіть текст (включаючи числівники для аналізу)", lines=4, placeholder="Наприклад: У нас налічується більше чотирьохсот корів, триста свиней і близько ста двадцяти овець.")
+        extract_button = gr.Button("Виділити числівники")
+        result_output = gr.Textbox(label="Знайдені числівники", interactive=False)
+        characteristics_button = gr.Button("Вивести характеристики числівників", visible=False)
+        characteristics_output = gr.Textbox(label="Характеристики числівників", visible=False, interactive=False)
+        
+        numerals_state = gr.State()
+
+        # Логіка натискання кнопки для виділення числівників
+        def handle_extract(text):
+            try:
+                extracted_numerals, numeral_tokens = extract_numerals(text)
+                return extracted_numerals, numeral_tokens, gr.update(visible=True), gr.update(visible=False)
+            except ValueError as e:
+                return str(e), None, gr.update(visible=False), gr.update(visible=False)
+
+        extract_button.click(fn=handle_extract, inputs=text_input, outputs=[result_output, numerals_state, characteristics_button, characteristics_output])
+
+        # Логіка натискання кнопки для виведення характеристик числівників
+        def handle_characteristics(numeral_tokens):
+            return extract_numeral_features(numeral_tokens), gr.update(visible=True)
+
+        characteristics_button.click(fn=handle_characteristics, inputs=numerals_state, outputs=[characteristics_output, characteristics_output])
+
+    return demo
+
+# Ініціалізуємо інтерфейс
+demo = create_interface()
+
+# Запускаємо Gradio
+if __name__ == "__main__":
+    demo.launch()
